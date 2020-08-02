@@ -1,4 +1,5 @@
 #![warn(rust_2018_idioms)]
+#![allow(unused_imports, dead_code)]
 use core::{
     future::Future,
     ops::Deref,
@@ -57,7 +58,7 @@ impl Deref for ConnectResponse {
     type Target = Vec<u8>;
 
     fn deref(&self) -> &Self::Target {
-      	&self.0
+        &self.0
     }
 }
 
@@ -66,18 +67,18 @@ async fn fetch_url(url: hyper::Uri) -> Result<(), Box<StdErr>> {
 
     impl AsyncRead for ConnectResponse {
         fn poll_read(
-            mut self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
             buf: &mut [u8],
         ) -> Poll<io::Result<usize>> {
-            Pin::new(&mut self.as_slice()).poll_read(_cx, buf)
+            Pin::new(&mut self.as_slice()).poll_read(cx, buf)
         }
     }
 
     impl AsyncWrite for ConnectResponse {
         fn poll_write(
             mut self: Pin<&mut Self>,
-            cx: &mut Context,
+            cx: &mut Context<'_>,
             buf: &[u8],
         ) -> Poll<Result<usize, Error>> {
             Pin::new(&mut self).poll_write(cx, buf)
@@ -85,14 +86,14 @@ async fn fetch_url(url: hyper::Uri) -> Result<(), Box<StdErr>> {
 
         fn poll_flush(
             mut self: Pin<&mut Self>,
-            cx: &mut Context,
+            cx: &mut Context<'_>,
         ) -> Poll<Result<(), Error>> {
             Pin::new(&mut self).poll_flush(cx)
         }
 
         fn poll_shutdown(
             mut self: Pin<&mut Self>,
-            cx: &mut Context,
+            cx: &mut Context<'_>,
         ) -> Poll<Result<(), Error>> {
             Pin::new(&mut self).poll_shutdown(cx)
         }
@@ -129,7 +130,7 @@ async fn fetch_url(url: hyper::Uri) -> Result<(), Box<StdErr>> {
 
         fn poll_ready(
             &mut self,
-            cx: &mut Context,
+            _cx: &mut Context<'_>,
         ) -> Poll<Result<(), Self::Error>> {
             Poll::Ready(Ok(()))
         }
