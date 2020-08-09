@@ -62,7 +62,14 @@ use http::{Method, Request, Response, Uri, Version};
 use self::connect::{sealed::Connect, Alpn, Connected, Connection};
 use self::pool::{Key as PoolKey, Pool, Poolable, Pooled, Reservation};
 use crate::body::{Body, HttpBody};
-use crate::common::{lazy as hyper_lazy, task, BoxSendFuture, Executor, Future, Lazy, Pin, Poll};
+use crate::common::{
+    lazy as hyper_lazy, task, BoxSendFuture, Executor, Future, Lazy, Pin, Poll,
+};
+use std::any::type_name;
+
+fn type_name_from_val<T>(input: T) {
+    web_sys::console::log_1(&type_name::<T>().into());
+}
 
 #[cfg(feature = "tcp")]
 pub use self::connect::HttpConnector;
@@ -180,13 +187,18 @@ where
     where
         B: Default,
     {
+        web_sys::console::log_1(&"inside Client.get()".into());
         let body = B::default();
+        web_sys::console::log_1(&"default body created".into());
         if !body.is_end_stream() {
             warn!("default HttpBody used for get() does not return true for is_end_stream");
         }
 
         let mut req = Request::new(body);
+        web_sys::console::log_1(&"request is created from body".into());
         *req.uri_mut() = uri;
+        web_sys::console::log_1(&"Gotten uri".into());
+
         self.request(req)
     }
 
@@ -212,6 +224,7 @@ where
     /// # fn main() {}
     /// ```
     pub fn request(&self, mut req: Request<B>) -> ResponseFuture {
+        web_sys::console::log_1(&"inside Client.request()".into());
         let is_http_connect = req.method() == Method::CONNECT;
         match req.version() {
             Version::HTTP_11 => (),
@@ -231,6 +244,7 @@ where
             // completely unsupported HTTP version (like HTTP/0.9)!
             other => return ResponseFuture::error_version(other),
         };
+        web_sys::console::log_1(&"matched request version".into());
 
         let pool_key = match extract_domain(req.uri_mut(), is_http_connect) {
             Ok(s) => s,
@@ -238,8 +252,11 @@ where
                 return ResponseFuture::new(Box::new(future::err(err)));
             }
         };
+        web_sys::console::log_1(&"extracted pool_key".into());
 
-        ResponseFuture::new(Box::new(self.retryably_send_request(req, pool_key)))
+        ResponseFuture::new(Box::new(
+            self.retryably_send_request(req, pool_key),
+        ))
     }
 
     fn retryably_send_request(
@@ -247,20 +264,46 @@ where
         req: Request<B>,
         pool_key: PoolKey,
     ) -> impl Future<Output = crate::Result<Response<Body>>> {
+        web_sys::console::log_1(
+            &"inside Client.retryably_send_request()".into(),
+        );
         let client = self.clone();
         let uri = req.uri().clone();
+        web_sys::console::log_1(&"client are uri created".into());
 
         let mut send_fut = client.send_request(req, pool_key.clone());
+        type_name_from_val(&send_fut);
+        web_sys::console::log_1(&"send_fut initialized".into());
         future::poll_fn(move |cx| loop {
-            match ready!(Pin::new(&mut send_fut).poll(cx)) {
-                Ok(resp) => return Poll::Ready(Ok(resp)),
-                Err(ClientError::Normal(err)) => return Poll::Ready(Err(err)),
+            web_sys::console::log_1(&"inside future::poll_move loop".into());
+            let test_fut = Pin::new(&mut send_fut);
+            web_sys::console::log_1(&"pinned send_fut".into());
+            let next_test = test_fut.poll(cx);
+            web_sys::console::log_1(&"polled test_fut".into());
+            match ready!(next_test) {
+                Ok(resp) => {
+                    web_sys::console::log_1(
+                        &"loop returned with ok match".into(),
+                    );
+                    return Poll::Ready(Ok(resp));
+                }
+                Err(ClientError::Normal(err)) => {
+                    web_sys::console::log_1(
+                        &"loop returned with normal error match".into(),
+                    );
+                    return Poll::Ready(Err(err));
+                }
                 Err(ClientError::Canceled {
                     connection_reused,
                     mut req,
                     reason,
                 }) => {
-                    if !client.config.retry_canceled_requests || !connection_reused {
+                    web_sys::console::log_1(
+                        &"loop hit cancelled error match".into(),
+                    );
+                    if !client.config.retry_canceled_requests
+                        || !connection_reused
+                    {
                         // if client disabled, don't retry
                         // a fresh connection means we definitely can't retry
                         return Poll::Ready(Err(reason));
@@ -281,7 +324,8 @@ where
         &self,
         mut req: Request<B>,
         pool_key: PoolKey,
-    ) -> impl Future<Output = Result<Response<Body>, ClientError<B>>> + Unpin {
+    ) -> impl Future<Output = Result<Response<Body>, ClientError<B>>> + Unpin
+    {
         let conn = self.connection_for(pool_key);
 
         let set_host = self.config.set_host;
@@ -291,7 +335,8 @@ where
                 if set_host {
                     let uri = req.uri().clone();
                     req.headers_mut().entry(HOST).or_insert_with(|| {
-                        let hostname = uri.host().expect("authority implies host");
+                        let hostname =
+                            uri.host().expect("authority implies host");
                         if let Some(port) = uri.port() {
                             let s = format!("{}:{}", hostname, port);
                             HeaderValue::from_str(&s)
@@ -352,22 +397,30 @@ where
                 // for a new request to start.
                 //
                 // It won't be ready if there is a body to stream.
-                if pooled.is_http2() || !pooled.is_pool_enabled() || pooled.is_ready() {
+                if pooled.is_http2()
+                    || !pooled.is_pool_enabled()
+                    || pooled.is_ready()
+                {
                     drop(pooled);
                 } else if !res.body().is_end_stream() {
                     let (delayed_tx, delayed_rx) = oneshot::channel();
                     res.body_mut().delayed_eof(delayed_rx);
-                    let on_idle = future::poll_fn(move |cx| pooled.poll_ready(cx)).map(move |_| {
-                        // At this point, `pooled` is dropped, and had a chance
-                        // to insert into the pool (if conn was idle)
-                        drop(delayed_tx);
-                    });
+                    let on_idle =
+                        future::poll_fn(move |cx| pooled.poll_ready(cx)).map(
+                            move |_| {
+                                // At this point, `pooled` is dropped, and had a chance
+                                // to insert into the pool (if conn was idle)
+                                drop(delayed_tx);
+                            },
+                        );
 
                     executor.execute(on_idle);
                 } else {
                     // There's no body to delay, but the connection isn't
                     // ready yet. Only re-insert when it's ready
-                    let on_idle = future::poll_fn(move |cx| pooled.poll_ready(cx)).map(|_| ());
+                    let on_idle =
+                        future::poll_fn(move |cx| pooled.poll_ready(cx))
+                            .map(|_| ());
 
                     executor.execute(on_idle);
                 }
@@ -379,7 +432,8 @@ where
     fn connection_for(
         &self,
         pool_key: PoolKey,
-    ) -> impl Future<Output = Result<Pooled<PoolClient<B>>, ClientError<B>>> {
+    ) -> impl Future<Output = Result<Pooled<PoolClient<B>>, ClientError<B>>>
+    {
         // This actually races 2 different futures to try to get a ready
         // connection the fastest, and to reduce connection churn.
         //
@@ -427,7 +481,9 @@ where
                 Either::Left(future::ok(checked_out))
             }
             // Connect won, checkout can just be dropped.
-            Either::Right((Ok(connected), _checkout)) => Either::Left(future::ok(connected)),
+            Either::Right((Ok(connected), _checkout)) => {
+                Either::Left(future::ok(connected))
+            }
             // Either checkout or connect could get canceled:
             //
             // 1. Connect is canceled if this is HTTP/2 and there is
@@ -436,20 +492,24 @@ where
             //    idle connection reliably.
             //
             // In both cases, we should just wait for the other future.
-            Either::Left((Err(err), connecting)) => Either::Right(Either::Left({
-                if err.is_canceled() {
-                    Either::Left(connecting.map_err(ClientError::Normal))
-                } else {
-                    Either::Right(future::err(ClientError::Normal(err)))
-                }
-            })),
-            Either::Right((Err(err), checkout)) => Either::Right(Either::Right({
-                if err.is_canceled() {
-                    Either::Left(checkout.map_err(ClientError::Normal))
-                } else {
-                    Either::Right(future::err(ClientError::Normal(err)))
-                }
-            })),
+            Either::Left((Err(err), connecting)) => {
+                Either::Right(Either::Left({
+                    if err.is_canceled() {
+                        Either::Left(connecting.map_err(ClientError::Normal))
+                    } else {
+                        Either::Right(future::err(ClientError::Normal(err)))
+                    }
+                }))
+            }
+            Either::Right((Err(err), checkout)) => {
+                Either::Right(Either::Right({
+                    if err.is_canceled() {
+                        Either::Left(checkout.map_err(ClientError::Normal))
+                    } else {
+                        Either::Right(future::err(ClientError::Normal(err)))
+                    }
+                }))
+            }
         })
     }
 
@@ -473,8 +533,8 @@ where
             let connecting = match pool.connecting(&pool_key, ver) {
                 Some(lock) => lock,
                 None => {
-                    let canceled =
-                        crate::Error::new_canceled().with("HTTP/2 connection in progress");
+                    let canceled = crate::Error::new_canceled()
+                        .with("HTTP/2 connection in progress");
                     return Either::Right(future::err(canceled));
                 }
             };
@@ -553,7 +613,10 @@ where
     type Error = crate::Error;
     type Future = ResponseFuture;
 
-    fn poll_ready(&mut self, _: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        _: &mut task::Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -573,7 +636,10 @@ where
     type Error = crate::Error;
     type Future = ResponseFuture;
 
-    fn poll_ready(&mut self, _: &mut task::Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(
+        &mut self,
+        _: &mut task::Context<'_>,
+    ) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -602,7 +668,9 @@ impl<C, B> fmt::Debug for Client<C, B> {
 // ===== impl ResponseFuture =====
 
 impl ResponseFuture {
-    fn new(fut: Box<dyn Future<Output = crate::Result<Response<Body>>> + Send>) -> Self {
+    fn new(
+        fut: Box<dyn Future<Output = crate::Result<Response<Body>>> + Send>,
+    ) -> Self {
         Self { inner: fut.into() }
     }
 
@@ -623,7 +691,10 @@ impl fmt::Debug for ResponseFuture {
 impl Future for ResponseFuture {
     type Output = crate::Result<Response<Body>>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut task::Context<'_>,
+    ) -> Poll<Self::Output> {
         Pin::new(&mut self.inner).poll(cx)
     }
 }
@@ -643,7 +714,10 @@ enum PoolTx<B> {
 }
 
 impl<B> PoolClient<B> {
-    fn poll_ready(&mut self, cx: &mut task::Context<'_>) -> Poll<crate::Result<()>> {
+    fn poll_ready(
+        &mut self,
+        cx: &mut task::Context<'_>,
+    ) -> Poll<crate::Result<()>> {
         match self.tx {
             PoolTx::Http1(ref mut tx) => tx.poll_ready(cx),
             PoolTx::Http2(_) => Poll::Ready(Ok(())),
@@ -680,13 +754,19 @@ impl<B: HttpBody + 'static> PoolClient<B> {
     fn send_request_retryable(
         &mut self,
         req: Request<B>,
-    ) -> impl Future<Output = Result<Response<Body>, (crate::Error, Option<Request<B>>)>>
+    ) -> impl Future<
+        Output = Result<Response<Body>, (crate::Error, Option<Request<B>>)>,
+    >
     where
         B: Send,
     {
         match self.tx {
-            PoolTx::Http1(ref mut tx) => Either::Left(tx.send_request_retryable(req)),
-            PoolTx::Http2(ref mut tx) => Either::Right(tx.send_request_retryable(req)),
+            PoolTx::Http1(ref mut tx) => {
+                Either::Left(tx.send_request_retryable(req))
+            }
+            PoolTx::Http2(ref mut tx) => {
+                Either::Right(tx.send_request_retryable(req))
+            }
         }
     }
 }
@@ -741,7 +821,9 @@ enum ClientError<B> {
 }
 
 impl<B> ClientError<B> {
-    fn map_with_reused(conn_reused: bool) -> impl Fn((crate::Error, Option<Request<B>>)) -> Self {
+    fn map_with_reused(
+        conn_reused: bool,
+    ) -> impl Fn((crate::Error, Option<Request<B>>)) -> Self {
         move |(err, orig_req)| {
             if let Some(req) = orig_req {
                 ClientError::Canceled {
@@ -812,7 +894,10 @@ fn authority_form(uri: &mut Uri) {
     };
 }
 
-fn extract_domain(uri: &mut Uri, is_http_connect: bool) -> crate::Result<PoolKey> {
+fn extract_domain(
+    uri: &mut Uri,
+    is_http_connect: bool,
+) -> crate::Result<PoolKey> {
     let uri_clone = uri.clone();
     match (uri_clone.scheme(), uri_clone.authority()) {
         (Some(scheme), Some(auth)) => Ok((scheme.clone(), auth.clone())),
@@ -901,7 +986,6 @@ impl Default for Builder {
 }
 
 impl Builder {
-    
     #[deprecated(
         note = "name is confusing, to disable the connection pool, call pool_max_idle_per_host(0)"
     )]
@@ -918,7 +1002,6 @@ impl Builder {
         }
     }
 
-    
     #[deprecated(note = "renamed to `pool_idle_timeout`")]
     pub fn keep_alive_timeout<D>(&mut self, val: D) -> &mut Self
     where
@@ -940,7 +1023,6 @@ impl Builder {
         self
     }
 
-    
     #[deprecated(note = "renamed to `pool_max_idle_per_host`")]
     pub fn max_idle_per_host(&mut self, max_idle: usize) -> &mut Self {
         self.pool_config.max_idle_per_host = max_idle;
@@ -1028,7 +1110,10 @@ impl Builder {
     /// If not set, hyper will use a default.
     ///
     /// [spec]: https://http2.github.io/http2-spec/#SETTINGS_INITIAL_WINDOW_SIZE
-    pub fn http2_initial_stream_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
+    pub fn http2_initial_stream_window_size(
+        &mut self,
+        sz: impl Into<Option<u32>>,
+    ) -> &mut Self {
         self.conn_builder
             .http2_initial_stream_window_size(sz.into());
         self
@@ -1063,7 +1148,10 @@ impl Builder {
     /// Passing `None` will do nothing.
     ///
     /// If not set, hyper will use a default.
-    pub fn http2_max_frame_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
+    pub fn http2_max_frame_size(
+        &mut self,
+        sz: impl Into<Option<u32>>,
+    ) -> &mut Self {
         self.conn_builder.http2_max_frame_size(sz);
         self
     }
@@ -1248,7 +1336,8 @@ mod unit_tests {
     #[test]
     fn test_extract_domain_connect_no_port() {
         let mut uri = "hyper.rs".parse().unwrap();
-        let (scheme, host) = extract_domain(&mut uri, true).expect("extract domain");
+        let (scheme, host) =
+            extract_domain(&mut uri, true).expect("extract domain");
         assert_eq!(scheme, *"http");
         assert_eq!(host, "hyper.rs");
     }
